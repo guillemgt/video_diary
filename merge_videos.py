@@ -23,20 +23,52 @@ def get_video_rotation(input_path):
     return rotation
 
 def set_to_8_bit_encoding_if_necessary(input_path, delete_intermediate_files=True):
-    # Check if the video is already in 8-bit encoding
+    """
+    Check if a video is in HDR and convert it to SDR if necessary.
+    """
+
+    # Check video metadata with ffprobe
     result = subprocess.run(
-        ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=profile', '-of', 'default=nw=1:nk=1', input_path],
+        ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 
+         'stream=color_primaries,color_transfer,color_space,max_cll,master_display', '-of', 'json', input_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
-    profile = result.stdout.decode().strip()
-    if '10' in profile:
-        # Convert to 8-bit encoding
-        output_path = input_path.replace('.mp4', '_8bit.mp4')
+
+    metadata = json.loads(result.stdout.decode())
+
+    # Extract color metadata
+    stream_metadata = metadata.get("streams", [{}])[0]
+    color_primaries = stream_metadata.get("color_primaries", "")
+    color_transfer = stream_metadata.get("color_transfer", "")
+    color_space = stream_metadata.get("color_space", "")
+
+    # Adjust parameters for HDR input
+    if color_primaries == "bt2020" or color_transfer in ["smpte2084", "arib-std-b67"] or color_space == "bt2020_ncl":
+        print("Detected HDR video. Applying tone mapping.")
+
+        output_path = input_path.replace('.mp4', '_sdr.mp4')
+
+        # Construct the ffmpeg command
+        vf_filters = (
+            "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+        )
+
         ffmpeg_command = [
-            'ffmpeg', '-y', '-i', input_path, '-vf', 'format=yuv420p', '-c:v', 'libx264', '-crf', '18', '-preset', 'fast', '-c:a', 'copy', output_path
+            'ffmpeg', '-i', input_path, '-vf', vf_filters, '-colorspace', 'bt709',
+            '-c:v', 'libx264', '-crf', '18', '-preset', 'slow', '-c:a', 'copy', output_path
         ]
-        subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # Print and execute the command
+        # print("FFmpeg command:", ' '.join(ffmpeg_command))
+        result = subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        if result.returncode != 0:
+            print("Error during FFmpeg execution:")
+            print(result.stderr.decode())
+            raise RuntimeError("FFmpeg failed to execute the tone mapping process.")
+
+        # Optionally delete the original file
         if delete_intermediate_files:
             os.remove(input_path)
         return output_path
@@ -118,7 +150,6 @@ def process_video(input_path, output_path, target_width, target_height, text,
         os.remove(input_path)
 
         
-        
 def format_date_no_leading_zero(date):
     # This function removes leading zeros from the day
     return date.strftime('%-d %b %Y') if os.name != 'nt' else date.strftime('%#d %b %Y')
@@ -170,14 +201,14 @@ def merge_videos(
         for video_file in processed_files:
             f.write(f"file '{video_file}'\n")
     
-    # Use ffmpeg to merge the videos with hardware acceleration
+    # Use ffmpeg to merge the videos with a consistent color format
     if lossless != False:
         video_codec = ['-c:v', 'h264_nvenc', '-qp', '0' if lossless == True else str(lossless-1)]
     else:
         video_codec = ['-c:v', 'h264_nvenc']
     ffmpeg_command = [
         "ffmpeg", '-y', "-loglevel", "quiet", "-hwaccel", "cuda", "-f", "concat", "-safe", "0", "-i", "tmp/videos_to_merge.txt",
-        *video_codec, "-c:a", "copy", output_combined_video
+        "-vf", "format=yuv420p", *video_codec, "-c:a", "copy", output_combined_video
     ]
     print('Running merge command:')
     print(' '.join(ffmpeg_command))
