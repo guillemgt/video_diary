@@ -6,14 +6,56 @@ import time
 from pathlib import Path
 import threading
 import yaml
+import socket
+from tqdm import tqdm
+import urllib
 
 from merge_videos import process_a_video, merge_videos
 
+# To avoid printing HTTP requests
+def log_message(self, format, *args):
+    pass
+BaseHTTPRequestHandler.log_message = log_message
+
+def get_lan_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+        return lan_ip
+    except Exception as e:
+        print(f"Error obtaining LAN IP: {e}")
+        return "???.???.???.???"
+
 config = yaml.safe_load(open('config.yaml'))
+
+# Shared progress variables
+progress_lock = threading.Lock()
+total_received = 0
+total_completed = 0
+total_files = None
+
+# TQDM progress bars
+progress_bar_received = None
+progress_bar_completed = None
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # Read a video file, save it and process it
+        global total_files, total_received, total_completed, progress_bar_received, progress_bar_completed
+
+        if 'plan' in self.path: # Request sent as a form with num={number of files}
+            global total_files
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            form_data = urllib.parse.parse_qs(post_data)
+            total_files = int(form_data['num'][0])
+
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write("Received".encode("utf-8"))
+            return
 
         ctype, pdict = cgi.parse_header(self.headers.get('Content-Type'))
         if ctype == 'multipart/form-data':
@@ -30,39 +72,56 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
                 f.write(file_data)
 
             Path(video_file.replace('.mp4', '.lock')).touch()
-            threading.Thread(target=process_a_video, args=(video_file, int(file_index), config)).start()
+            threading.Thread(target=self.process_video, args=(video_file, file_index)).start()
+
+            if progress_bar_completed is None:
+                progress_bar_received = tqdm(total=total_files, desc=" Received", position=0)
+                progress_bar_completed = tqdm(total=total_files, desc="Completed", position=1)
+
+            with progress_lock:
+                total_received += 1
+                progress_bar_received.update(1)
 
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b'File uploaded successfully')
+            formatted_str = f"File {file_index} uploaded successfully"
+            self.wfile.write(formatted_str.encode("utf-8"))
         else:
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b'Bad request')
 
-    def do_GET(self):
-        # Merge the videos, send them and clean up
-        
-        if 'done' in self.path:
+    def process_video(self, video_file, file_index):
+        global total_completed, progress_bar_completed
+        process_a_video(video_file, int(file_index), config)
 
+        with progress_lock:
+            total_completed += 1
+            progress_bar_completed.update(1)
+
+    def do_GET(self):
+        if 'done' in self.path:
             if config['delete_intermediate_files']:
                 for file in os.listdir('tmp/uploads'):
                     os.remove(f'tmp/uploads/{file}')
                 os.remove('tmp/combined_video.mp4')
+                os.rmdir('tmp/uploads')
+                os.rmdir('tmp')
 
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'Done')
-
+            
+            print("Sent the finished video. My work is now complete :)")
+            exit(0)
             return
 
-        # Check if there are files of the form tmp/uploads/*.lock
         if any([file.endswith('.lock') for file in os.listdir('tmp/uploads')]):
             self.send_response(202)
             self.end_headers()
             self.wfile.write(b'Processing individual videos...')
             return
-        
+
         file_path = 'tmp/combined_video.mp4'
         if os.path.exists(file_path) and not os.path.exists('tmp/process.lock'):
             self.send_response(200)
@@ -71,15 +130,15 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             with open(file_path, 'rb') as file:
                 self.wfile.write(file.read())
             return
-        
-        
+
         if os.path.exists('tmp/process.lock'):
             self.send_response(202)
             self.end_headers()
             self.wfile.write(b'Processing, try again in 1 minute')
             return
-        
-        # Create lock file and start processing in a new thread
+
+        progress_bar_received.close()
+        progress_bar_completed.close()
         Path('tmp/process.lock').touch()
         threading.Thread(target=merge_videos, kwargs={
             'output_combined_video': file_path,
@@ -93,13 +152,17 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 def run(server_class=HTTPServer, handler_class=SimpleHTTPRequestHandler, port=8080):
     server_address = ('', port)
     httpd = server_class(server_address, handler_class)
-    print(f'Starting server on port {port}...')
+    print(f"The URL is:\n >>> {get_lan_ip()}:{port} <<<\n")
     httpd.serve_forever()
 
 if __name__ == '__main__':
-
     print("Using config:")
     for key, value in config.items():
         print(f"\t{key}: {value}")
+    print()
 
-    run()
+    try:
+        run()
+    except KeyboardInterrupt:
+        progress_bar_received.close()
+        progress_bar_completed.close()

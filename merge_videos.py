@@ -45,8 +45,6 @@ def set_to_8_bit_encoding_if_necessary(input_path, delete_intermediate_files=Tru
 
     # Adjust parameters for HDR input
     if color_primaries == "bt2020" or color_transfer in ["smpte2084", "arib-std-b67"] or color_space == "bt2020_ncl":
-        print("Detected HDR video. Applying tone mapping.")
-
         output_path = input_path.replace('.mp4', '_sdr.mp4')
 
         # Construct the ffmpeg command
