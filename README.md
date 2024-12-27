@@ -12,7 +12,7 @@ NOTE: The dates in the videos are not the actual dates on which the videos where
 
 The server script requires Python and `ffmpeg` to be installed.
 
-Download [the iOS shorcut](https://www.icloud.com/shortcuts/5692acc6ee484020b3e281d917244d37) and install it on your iOS device.
+Download [the iOS shorcut](https://www.icloud.com/shortcuts/f42337bf98c4483b86ab8b235d198d40) and install it on your iOS device.
 
 ## Usage
 
