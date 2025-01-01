@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import cgi
 import os
+import shutil
 import mimetypes
 import time
 from pathlib import Path
@@ -31,6 +32,7 @@ def get_lan_ip():
 config = yaml.safe_load(open('config.yaml'))
 
 # Shared progress variables
+processing_lock = threading.Lock()
 progress_lock = threading.Lock()
 total_received = 0
 total_completed = 0
@@ -70,6 +72,12 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             video_file = f'tmp/uploads/{file_index}.mp4'
             with open(video_file, 'wb') as f:
                 f.write(file_data)
+            
+            # Save the originals if set in the config
+            if (originals_path := config.get("copy_original_files_to")) is not None:
+                os.makedirs(originals_path, exist_ok=True)
+                new_video_file = f'{originals_path}/{file_index}.mp4'
+                shutil.copyfile(video_file, new_video_file)
 
             Path(video_file.replace('.mp4', '.lock')).touch()
             threading.Thread(target=self.process_video, args=(video_file, file_index)).start()
@@ -93,7 +101,8 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def process_video(self, video_file, file_index):
         global total_completed, progress_bar_completed
-        process_a_video(video_file, int(file_index), config)
+        with processing_lock:
+            process_a_video(video_file, int(file_index), config)
 
         with progress_lock:
             total_completed += 1
@@ -101,6 +110,10 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if 'done' in self.path:
+            if (save_path := config['save_result_to']) is not None:
+                os.makedirs(save_path, exist_ok=True)
+                shutil.copyfile('tmp/combined_video.mp4', f'{save_path}/result.mp4')
+
             if config['delete_intermediate_files']:
                 for file in os.listdir('tmp/uploads'):
                     os.remove(f'tmp/uploads/{file}')
@@ -129,6 +142,8 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             with open(file_path, 'rb') as file:
                 self.wfile.write(file.read())
+            filesize_in_mb = os.path.getsize(file_path) // (1024 * 1024)
+            print(f"Combined video file size: {filesize_in_mb} MB")
             return
 
         if os.path.exists('tmp/process.lock'):
@@ -137,10 +152,12 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'Processing, try again in 1 minute')
             return
 
-        progress_bar_received.close()
-        progress_bar_completed.close()
+        if progress_bar_received:
+            progress_bar_received.close()
+            progress_bar_completed.close()
         Path('tmp/process.lock').touch()
         threading.Thread(target=merge_videos, kwargs={
+            'config': config,
             'output_combined_video': file_path,
             'delete_intermediate_files': config['delete_intermediate_files'],
             'lossless': config['lossless']

@@ -6,6 +6,9 @@ start_month: 1
 start_year: 2024
 font: "Arial"
 font_size: 300
+copy_original_files_to: None
+save_result_to: None
 delete_intermediate_files: true
 lossless: 32
 lossless_aux: 16
+force_video_duration_to_seconds: 1

@@ -22,7 +22,7 @@ def get_video_rotation(input_path):
         pass
     return rotation
 
-def set_to_8_bit_encoding_if_necessary(input_path, delete_intermediate_files=True):
+def deal_with_8bit_encoding_and_hdr(input_path, delete_intermediate_files=True):
     """
     Check if a video is in HDR and convert it to SDR if necessary.
     """
@@ -72,13 +72,59 @@ def set_to_8_bit_encoding_if_necessary(input_path, delete_intermediate_files=Tru
         return output_path
     return input_path
 
+def add_empty_audio_if_missing(input_path, delete_intermediate_files=True):
+    """
+    Adds a silent audio track to a video if it doesn't have one.
+    """
+
+   # Check if the input video has an audio stream
+    result = subprocess.run(
+        ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', input_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    if not result.stdout.strip():
+        # No audio stream found; add a silent audio track
+        video_duration = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', input_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        ).stdout.decode().strip()
+
+
+        output_path = input_path.replace('.mp4', '_with_audio_stream.mp4')
+        result = subprocess.run([
+            'ffmpeg', '-y', '-i', input_path,
+            '-f', 'lavfi', '-t', video_duration, '-i',
+            'anullsrc=channel_layout=stereo:sample_rate=44100',
+            '-c:v', 'copy', '-c:a', 'aac', '-shortest', output_path
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        if result.returncode != 0:
+            print("Error during FFmpeg execution for adding empty audio stream:")
+            print(result.stderr.decode())
+            raise RuntimeError("FFmpeg failed to execute the audio addition process.")
+        
+        # Optionally delete the original file
+        if delete_intermediate_files:
+            os.remove(input_path)
+        return output_path
+    else:
+        # If audio exists, just copy the input to the output
+        return input_path
+
 def process_video(input_path, output_path, target_width, target_height, text,
-                  framerate=30, font='Arial', fontsize=100, bevel=None, delete_intermediate_files=True, lossless=True):
-    
+                  framerate=30, font='Arial', fontsize=100, bevel=None, delete_intermediate_files=True, lossless=True, force_video_duration_to_seconds=None):
     if bevel is None:
         bevel = fontsize // 30
-    
-    input_path = set_to_8_bit_encoding_if_necessary(input_path, delete_intermediate_files=delete_intermediate_files)
+
+    # Step 1: Handle missing audio
+    input_path = add_empty_audio_if_missing(input_path, delete_intermediate_files=delete_intermediate_files)
+
+    # Step 2: Handle HDR
+    input_path = deal_with_8bit_encoding_and_hdr(input_path, delete_intermediate_files=delete_intermediate_files)
+
+    # Step 3: Normalize dimensions and aspect ratio
 
     # Get the original dimensions and rotation of the video
     result = subprocess.run(
@@ -93,8 +139,6 @@ def process_video(input_path, output_path, target_width, target_height, text,
     # Adjust dimensions based on rotation
     if rotation in [90, -90, 270, -270]:
         width, height = height, width
-
-    # print(width, height, rotation)
 
     # Calculate the scaling factors and padding to preserve aspect ratio
     aspect_ratio = width / height
@@ -122,20 +166,26 @@ def process_video(input_path, output_path, target_width, target_height, text,
         f"x={position[0]}:y={position[1]}+h-th"
     )
 
-    # Define codec settings based on the lossless argument
+    # Step 4: Define codec settings based on the lossless argument
     if lossless != False:
         video_codec = ['-c:v', 'h264_nvenc', '-qp', '0' if lossless == True else str(lossless-1)]
     else:
         video_codec = ['-c:v', 'h264_nvenc']
 
-    # Convert to constant frame rate, normalize, resize, pad, and add text using ffmpeg with hardware acceleration
+    # Step 5: Define duration arguments if necessary
+    duration_args = [] if force_video_duration_to_seconds is None else ['-t', str(force_video_duration_to_seconds)]
+
+    # Step 6: Combine normalization, scaling, and audio in a single FFmpeg command
     ffmpeg_command = [
         'ffmpeg',
         '-y',
         '-hwaccel', 'cuda',
         '-i', input_path, '-vf',
         f"fps={framerate},{scale_filter},{pad_filter},{draw_text_filter}",
-        *video_codec, '-c:a', 'copy', output_path
+        *video_codec,
+        *duration_args,
+        '-vsync', 'cfr', '-r', str(framerate),
+        '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2', output_path
     ]
     
     result = subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -144,6 +194,7 @@ def process_video(input_path, output_path, target_width, target_height, text,
         print(f"Error processing video {input_path}: {result.stderr.decode()}")
         raise RuntimeError(f"ffmpeg command failed with return code {result.returncode}")
     
+    # Step 7: Cleanup intermediate files if necessary
     if delete_intermediate_files and input_path != output_path:
         os.remove(input_path)
 
@@ -173,13 +224,15 @@ def process_a_video(input_file, index, config):
         lossless=lossless,
         delete_intermediate_files=delete_intermediate_files,
         font=font,
-        fontsize=fontsize
+        fontsize=fontsize,
+        force_video_duration_to_seconds=config['force_video_duration_to_seconds']
     )
     
     if os.path.exists(input_file.replace('.mp4', '.lock')):
         os.remove(input_file.replace('.mp4', '.lock'))
 
 def merge_videos(
+    config,
     folder_path = 'tmp/uploads',
     output_combined_video = 'tmp/combined_video.mp4',
     delete_intermediate_files = True,
@@ -205,10 +258,12 @@ def merge_videos(
     else:
         video_codec = ['-c:v', 'h264_nvenc']
     ffmpeg_command = [
-        "ffmpeg", '-y', "-loglevel", "quiet", "-hwaccel", "cuda", "-f", "concat", "-safe", "0", "-i", "tmp/videos_to_merge.txt",
+        "ffmpeg", '-y', "-hwaccel", "cuda", "-f", "concat", "-safe", "0", "-fflags", "+genpts", "-i", "tmp/videos_to_merge.txt",
+        '-preset', 'p5',
+        '-vsync', 'cfr', '-r', str(config['framerate']),
         "-vf", "format=yuv420p", *video_codec, "-c:a", "copy", output_combined_video
     ]
-    print('Running merge command:')
+    print('\nRunning merge command:')
     print(' '.join(ffmpeg_command))
     result = subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
