@@ -257,11 +257,16 @@ def merge_videos(
         video_codec = ['-c:v', 'h264_nvenc', '-qp', '0' if lossless == True else str(lossless-1)]
     else:
         video_codec = ['-c:v', 'h264_nvenc']
+        
+    framerate = str(config['framerate'])
     ffmpeg_command = [
         "ffmpeg", '-y', "-hwaccel", "cuda", "-f", "concat", "-safe", "0", "-fflags", "+genpts", "-i", "tmp/videos_to_merge.txt",
         '-preset', 'p5',
-        '-vsync', 'cfr', '-r', str(config['framerate']),
-        "-vf", "format=yuv420p", *video_codec, "-c:a", "copy", output_combined_video
+        '-vsync', 'cfr', '-r', framerate,
+        '-movflags', '+faststart',
+        "-vf", f"format=yuv420p,fps={framerate}", *video_codec,
+        '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+        output_combined_video
     ]
     print('\nRunning merge command:')
     print(' '.join(ffmpeg_command))

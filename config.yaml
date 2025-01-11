@@ -4,10 +4,10 @@ framerate: 30
 start_day: 1
 start_month: 1
 start_year: 2024
-font: "Arial"
+font: "data/PatuaOne-Regular.ttf" # Can be a system font name or a path to a TTF file
 font_size: 300
-copy_original_files_to: None
-save_result_to: None
+copy_original_files_to: saved/originals # null or a directory path
+save_result_to: saved/ # null or a directory path
 delete_intermediate_files: true
 lossless: 32
 lossless_aux: 16
