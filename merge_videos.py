@@ -274,6 +274,7 @@ def process_video(
         f"drawtext=text='{text}':fontfile={font}:fontsize={fontsize}:fontcolor=white:"
         f"x={position[0]}:y={position[1]}+h-th"
     )
+    normalized_fps_filter = f"fps={framerate}"
 
     # Step 4: Define codec settings based on the lossless argument
     if lossless != False:
@@ -302,7 +303,7 @@ def process_video(
         "-i",
         input_path,
         "-vf",
-        f"fps={framerate},{scale_filter},{pad_filter},{draw_text_filter}",
+        f"{normalized_fps_filter},{scale_filter},{pad_filter},{draw_text_filter}",
         *video_codec,
         *duration_args,
         "-vsync",
@@ -389,7 +390,7 @@ def merge_videos(
     video_files.sort(key=lambda f: int(re.match(r"(\d+)", f).group(1)))
     processed_files = []
 
-    for i, video_file in enumerate(tqdm(video_files, desc="Adding dates")):
+    for i, video_file in enumerate(video_files):
         processed_file = f"{folder_path}/{video_file}"
         processed_file = processed_file[len("tmp/") :]
         processed_files.append(processed_file)
@@ -429,6 +430,13 @@ def merge_videos(
         "cfr",
         "-r",
         framerate,
+        # Map video and audio explicitly
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0",
+        # # Reset timestamps
+        # "setpts=PTS-STARTPTS",
         "-movflags",
         "+faststart",
         "-vf",
@@ -442,6 +450,10 @@ def merge_videos(
         "44100",
         "-ac",
         "2",
+        "-async",
+        "1",
+        "-af",
+        "aresample=async=1000",
         output_combined_video,
     ]
     print("\nRunning merge command:")

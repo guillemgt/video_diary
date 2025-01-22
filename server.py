@@ -154,7 +154,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             with open(file_path, "rb") as file:
                 self.wfile.write(file.read())
-            filesize_in_mb = os.path.getsize(file_path) // (1024 * 1024)
+            filesize_in_mb = os.path.getsize(file_path) // 1_000_000
             print(f"Combined video file size: {filesize_in_mb} MB")
             return
 
